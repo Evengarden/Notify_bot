@@ -19,6 +19,7 @@ chat_id = 0
 todo_list = []
 dict_todo_list = {}
 
+#TODO добавить выбор периодичности напоминания
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):

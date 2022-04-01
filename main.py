@@ -10,11 +10,17 @@ from models.todo import ToDo
 
 import cfg
 
+# TODO учитывать время клиента
+# TODO хранение работ scheduler'а в бд с последующей синхронизацией
+# TODO добавить кнопку меню при открытии диалогаъ
+
 locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
 
 bot = telebot.TeleBot(cfg.API_TOKEN)
 
 schedule = BlockingScheduler()
+
+blocking_state = ['creating todo', 'edit name', 'edit datetime']
 
 
 # TODO добавить выбор периодичности напоминания
@@ -26,9 +32,19 @@ def send_welcome(message):
 Я буду помогать тебе не забыть важные события или дела, которые необходимо сделать!\
  Для получения доступного списка команд введи /help
     """)
-    User.db_sync(message.from_user.id)
-    user = User.get(message.from_user.id)
-    ToDo.db_sync(user[0].user_id)
+    current_user = User(user_id=message.from_user.id)
+    if current_user.get_user() is None:
+        User.insert_user(current_user.user_id, current_user)
+    else:
+        current_user = current_user.get_user()
+    User.db_sync(current_user.user_id)
+    ToDo.db_sync(current_user.user_id)
+
+    markup = types.ReplyKeyboardMarkup()
+    markup.add(types.KeyboardButton("/menu"))
+    markup.add(types.KeyboardButton("/help"))
+    markup.add(types.KeyboardButton("/start"))
+    bot.send_message(message.chat.id, 'Список команд', reply_markup=markup)
 
 
 @bot.message_handler(commands=['help'])
@@ -40,7 +56,7 @@ def get_commands_list(message):
 
 
 @bot.message_handler(commands=['menu'])
-def add_todo(message):
+def set_menu(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Добавить событие", callback_data='create_todo'))
     markup.add(types.InlineKeyboardButton("Показать список событий", callback_data='get_list'))
@@ -56,16 +72,16 @@ def get_todo_list(message: str, user_id: int):
             datetime_of_todo = datetime.datetime.strptime(todo.date_of_todo, '%Y-%m-%d %H:%M:%S')
             markup.add(types.InlineKeyboardButton(
                 f"{todo.name_of_todo} - {datetime_of_todo.strftime(u'%d %B в %H:%M')}",
-                callback_data=f"{todo.name_of_todo}"))
+                callback_data=f"{todo.get_id()}"))
         bot.send_message(message.chat.id, 'Список напоминаний', reply_markup=markup)
     else:
         bot.send_message(message.chat.id, 'Список напоминаний пуст')
 
 
-def get_todo_from_callback(name_of_todo: str, user_id: int, todo_list: list):
+def get_todo_from_callback(todo_id: int, user_id: int, todo_list: list):
     selected_todo = None
     for todo in todo_list:
-        if todo.name_of_todo == name_of_todo and todo.user_id == user_id:
+        if todo.get_id() == todo_id and todo.user_id == user_id:
             selected_todo = todo
     return selected_todo
 
@@ -77,33 +93,40 @@ def answer(call):
     data = call.data
     splited_data = data.split(' ')
     if splited_data[0] == 'get_list':
-        get_todo_list(call.message, call.from_user.id)
+        get_todo_list(call.message, call.from_user.id) if bot.get_state(
+            call.from_user.id) not in blocking_state else bot.send_message(
+            call.message.chat.id,
+            'Нельзя просматривать список на этапе создания или редактирования события')
     if splited_data[0] == 'create_todo':
+        bot.set_state(call.from_user.id, 'creating todo')
         todo = ToDo(user_id=call.from_user.id)
         todo.create_todo()
         bot.send_message(call.message.chat.id, 'О чем нужно напомнить?', parse_mode='html')
-    elif splited_data[0] in map(lambda x: x.name_of_todo, todo_list):
+    elif splited_data[0].isdigit() and int(splited_data[0]) in map(lambda x: x.get_id(), todo_list):
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Изменить название", callback_data=f'edit_name {call.data}'))
-        markup.add(types.InlineKeyboardButton("Изменить дату и время", callback_data=f'edit_datetime {call.data}'))
-        markup.add(types.InlineKeyboardButton("Удалить", callback_data=f'delete {call.data}'))
+        markup.add(types.InlineKeyboardButton("Изменить название", callback_data=f'edit_name {splited_data[0]}'))
+        markup.add(
+            types.InlineKeyboardButton("Изменить дату и время", callback_data=f'edit_datetime {splited_data[0]}'))
+        markup.add(types.InlineKeyboardButton("Удалить", callback_data=f'delete {splited_data[0]}'))
         bot.send_message(call.message.chat.id, 'Что нужно сделать с напоминанием?', reply_markup=markup)
     elif splited_data[0] == 'edit_name':
-        selected_todo = get_todo_from_callback(splited_data[1], user[0].user_id, todo_list)
+        bot.set_state(call.from_user.id, 'edit name')
+        selected_todo = get_todo_from_callback(int(splited_data[1]), user[0].user_id, todo_list)
         bot.send_message(call.message.chat.id, 'Введите новое название')
         state = 'edit_name'
         todo = selected_todo
         todo.state = state
         ToDo.update_state_todo(todo.get_id(), state)
     elif splited_data[0] == 'edit_datetime':
-        selected_todo = get_todo_from_callback(splited_data[1], user[0].user_id, todo_list)
+        bot.set_state(call.from_user.id, 'edit datetime')
+        selected_todo = get_todo_from_callback(int(splited_data[1]), user[0].user_id, todo_list)
         bot.send_message(call.message.chat.id, 'Введите обновленные дату и время')
         state = 'edit_datetime'
         todo = selected_todo
         todo.state = state
         ToDo.update_state_todo(todo.get_id(), state)
     elif splited_data[0] == 'delete':
-        selected_todo = get_todo_from_callback(splited_data[1], user[0].user_id, todo_list)
+        selected_todo = get_todo_from_callback(int(splited_data[1]), user[0].user_id, todo_list)
         bot.send_message(call.message.chat.id, 'Напоминание удалено')
         schedule.remove_job(selected_todo.get_id())
         ToDo.delete_todo(selected_todo.get_id(), selected_todo)
@@ -132,8 +155,9 @@ def chat_actions_handler(message):
         last_user_todo.date_of_todo = parsed_text
         last_user_todo.state = state
         ToDo.update_todo(last_user_todo.get_id(), last_user_todo.name_of_todo, parsed_text, state, last_user_todo)
+        bot.set_state(message.from_user.id, state)
         schedule.add_job(send_notification, 'date', run_date=parsed_text,
-                         args=[last_user_todo, message.chat.id], id = f'{last_user_todo.get_id()}')
+                         args=[last_user_todo, message.chat.id], id=f'{last_user_todo.get_id()}')
         if not schedule.state:
             schedule.start()
     elif last_user_todo.state == 'edit_name':
@@ -142,6 +166,7 @@ def chat_actions_handler(message):
         last_user_todo.name_of_todo = message.text
         ToDo.update_todo(last_user_todo.get_id(), message.text, last_user_todo.date_of_todo, state, last_user_todo)
         bot.send_message(message.chat.id, 'Название изменено', parse_mode='html')
+        bot.set_state(message.from_user.id, state)
     elif last_user_todo.state == 'edit_datetime':
         parsed_text = parser(message.text)
         if not parsed_text:
@@ -152,6 +177,7 @@ def chat_actions_handler(message):
         last_user_todo.state = state
         ToDo.update_todo(last_user_todo.get_id(), last_user_todo.name_of_todo, parsed_text, state, last_user_todo)
         bot.send_message(message.chat.id, 'Дата и время изменены', parse_mode='html')
+        bot.set_state(message.from_user.id, state)
 
 
 def send_notification(todo: ToDo, chat_id: int):

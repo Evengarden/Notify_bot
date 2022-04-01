@@ -5,13 +5,14 @@ class User:
     instances = []
 
     def __init__(self, **kwargs):
-        self.__id = kwargs.get('id')
+        self.__id = kwargs.get('id', None)
         self.user_id = kwargs.get('user_id')
         User.instances.append(self)
 
     def get_user(self):
         user_row = db.db_select_user(self.user_id)
         if user_row is not None:
+            self.__id = user_row[0]
             return self
         else:
             return None
@@ -21,7 +22,8 @@ class User:
         self.__id = created_user
 
     @staticmethod
-    def insert_user(user_id: int):
+    def insert_user(user_id: int, user: object):
+        User.instances.append(user)
         return db.db_insert_user(user_id)
 
     @classmethod
